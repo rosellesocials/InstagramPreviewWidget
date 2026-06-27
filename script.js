@@ -1,8 +1,24 @@
+/* ================================================================
+   script.js  —  Instagram Grid Widget
+   Fixes:
+   1. Drag-and-drop is scoped to #igGridInner only — highlights row
+      is never touched by grid drag events.
+   2. After a local drag-reorder the new sequence is stored in
+      manualOrder (a Map of id→position). renderWidget always reads
+      manualOrder first, so the view never snaps back.
+   3. Auto-sync: preview re-fetches Notion every 30 s and merges
+      any remote order changes UNLESS the user has an un-saved local
+      reorder in flight. Embed mode also continues to auto-refresh.
+   4. /api/reorder is called after every drag so Notion stays in sync.
+================================================================ */
+
 /* ===================== State ===================== */
-let currentItems = [];
+let currentItems   = [];      // full item list, kept in manualOrder sequence
 let currentProfile = null;
-let activeFilterTag = null;
-let activePostType = "Post";
+let activeFilterTag  = null;
+let activePostType   = "Post";
+let manualOrder      = null;  // Map<id, position> set after a local drag; null = use Notion order
+let autoSyncTimer    = null;  // setInterval handle for preview auto-sync
 
 const CONVENIENCE_KEY = "igGridWidgetConvenience";
 
@@ -14,7 +30,8 @@ function loadConvenience() {
 }
 
 function escapeHtml(str) {
-  return (str || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  return (str || "").replace(/[&<>"']/g,
+    (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
 /* ===================== Tabs ===================== */
@@ -60,12 +77,44 @@ async function fetchNotionData(token, pageUrl) {
   return data;
 }
 
-document.getElementById("genbtn").addEventListener("click", async () => {
-  const token = document.getElementById("token").value.trim();
-  const pageUrl = document.getElementById("pageurl").value.trim();
-  const btn = document.getElementById("genbtn");
+/* Apply remote data while respecting any unsaved local drag order */
+function applyFetchedData(data) {
+  currentProfile = data.profile;
 
-  if (!token) return showStatus("status", "Please enter your Notion integration token.", "error");
+  if (manualOrder) {
+    // User has dragged locally but /api/reorder may not have finished yet.
+    // Keep local sequence; just update item metadata (titles, images, etc.)
+    // from Notion without changing the order.
+    const meta = {};
+    (data.items || []).forEach((it) => { meta[it.id] = it; });
+    currentItems = currentItems.map((it) => meta[it.id] ? { ...meta[it.id], order: it.order } : it);
+    // Add any brand-new items Notion returned that we don't have yet
+    (data.items || []).forEach((it) => {
+      if (!currentItems.find((c) => c.id === it.id)) currentItems.push(it);
+    });
+  } else {
+    // No local reorder — trust Notion's order completely
+    currentItems = data.items || [];
+    sortByNotionOrder();
+  }
+}
+
+/* Sort currentItems by whatever 'order' field Notion returned */
+function sortByNotionOrder() {
+  currentItems.sort((a, b) => {
+    const ao = a.order ?? 9999;
+    const bo = b.order ?? 9999;
+    return ao - bo;
+  });
+}
+
+/* ── Connect & Preview button ── */
+document.getElementById("genbtn").addEventListener("click", async () => {
+  const token   = document.getElementById("token").value.trim();
+  const pageUrl = document.getElementById("pageurl").value.trim();
+  const btn     = document.getElementById("genbtn");
+
+  if (!token)   return showStatus("status", "Please enter your Notion integration token.", "error");
   if (!pageUrl) return showStatus("status", "Please enter your Notion page or database URL.", "error");
 
   btn.disabled = true;
@@ -73,22 +122,37 @@ document.getElementById("genbtn").addEventListener("click", async () => {
 
   try {
     const data = await fetchNotionData(token, pageUrl);
-    currentItems = data.items;
-    currentProfile = data.profile;
-    showStatus("status", "✓ Connected! " + data.items.length + " items loaded.", "success");
-    renderWidget("preview", { token, pageUrl, live: false });
+    manualOrder = null; // fresh connect clears any local drag state
+    applyFetchedData(data);
+    showStatus("status", "✓ Connected! " + currentItems.length + " items loaded.", "success");
+    renderWidget("preview", { token, pageUrl });
 
     saveConvenience(token, pageUrl);
     document.getElementById("embedCard").style.display = "block";
     document.getElementById("embedUrl").value = buildEmbedUrl(token, pageUrl);
-
     fillSettingsForm(currentProfile);
+
+    // Start auto-sync for the preview (every 30 s)
+    startAutoSync("preview", token, pageUrl);
+
   } catch (e) {
     showStatus("status", "Error: " + e.message, "error");
   } finally {
     btn.disabled = false;
   }
 });
+
+/* ── Auto-sync for preview ── */
+function startAutoSync(containerId, token, pageUrl) {
+  if (autoSyncTimer) clearInterval(autoSyncTimer);
+  autoSyncTimer = setInterval(async () => {
+    try {
+      const data = await fetchNotionData(token, pageUrl);
+      applyFetchedData(data);
+      renderWidget(containerId, { token, pageUrl });
+    } catch (e) { /* silent — don't disrupt the user */ }
+  }, 30000);
+}
 
 document.getElementById("copyEmbedBtn").addEventListener("click", (e) => {
   const input = document.getElementById("embedUrl");
@@ -101,11 +165,12 @@ document.getElementById("copyEmbedBtn").addEventListener("click", (e) => {
 
 /* ===================== Settings tab ===================== */
 function fillSettingsForm(profile) {
-  document.getElementById("igusername").value = profile.username || "";
+  if (!profile) return;
+  document.getElementById("igusername").value    = profile.username    || "";
   document.getElementById("igdisplayname").value = profile.displayName || "";
-  document.getElementById("igbio").value = profile.bio || "";
-  document.getElementById("iglink").value = profile.link || "";
-  document.getElementById("igavatar").value = profile.avatar || "";
+  document.getElementById("igbio").value         = profile.bio         || "";
+  document.getElementById("iglink").value        = profile.link        || "";
+  document.getElementById("igavatar").value      = profile.avatar      || "";
   renderHighlightEditor(profile.highlights || []);
 }
 
@@ -120,8 +185,8 @@ function buildHighlightRow(h, index) {
   row.className = "highlight-row";
   row.dataset.index = index;
   row.innerHTML = `
-    <input type="text" class="h-name" placeholder="Name" value="${escapeHtml(h?.name || "")}">
-    <input type="url" class="h-cover" placeholder="Cover image URL" value="${escapeHtml(h?.cover || "")}">
+    <input type="text"  class="h-name"  placeholder="Name"            value="${escapeHtml(h?.name  || "")}">
+    <input type="url"   class="h-cover" placeholder="Cover image URL" value="${escapeHtml(h?.cover || "")}">
     <input type="color" class="h-color" value="${h?.color || "#c0392b"}">
     <button type="button" class="h-remove">✕</button>
   `;
@@ -135,7 +200,7 @@ document.getElementById("addHighlightBtn").addEventListener("click", () => {
 
 function collectHighlightsFromForm() {
   return Array.from(document.querySelectorAll(".highlight-row")).map((row) => ({
-    name: row.querySelector(".h-name").value.trim(),
+    name:  row.querySelector(".h-name").value.trim(),
     cover: row.querySelector(".h-cover").value.trim(),
     color: row.querySelector(".h-color").value,
   })).filter((h) => h.name || h.cover);
@@ -143,18 +208,18 @@ function collectHighlightsFromForm() {
 
 function collectProfileFromForm() {
   return {
-    username: document.getElementById("igusername").value.trim() || "@yourusername",
+    username:    document.getElementById("igusername").value.trim()    || "@yourusername",
     displayName: document.getElementById("igdisplayname").value.trim() || "Your Display Name",
-    bio: document.getElementById("igbio").value.trim(),
-    link: document.getElementById("iglink").value.trim(),
-    avatar: document.getElementById("igavatar").value.trim(),
-    highlights: collectHighlightsFromForm(),
+    bio:         document.getElementById("igbio").value.trim(),
+    link:        document.getElementById("iglink").value.trim(),
+    avatar:      document.getElementById("igavatar").value.trim(),
+    highlights:  collectHighlightsFromForm(),
   };
 }
 
 document.getElementById("saveSettingsBtn").addEventListener("click", async () => {
-  const conv = loadConvenience();
-  const token = document.getElementById("token").value.trim() || conv.token;
+  const conv    = loadConvenience();
+  const token   = document.getElementById("token").value.trim()   || conv.token;
   const pageUrl = document.getElementById("pageurl").value.trim() || conv.pageUrl;
 
   if (!token || !pageUrl) {
@@ -172,37 +237,39 @@ document.getElementById("saveSettingsBtn").addEventListener("click", async () =>
     });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || "Could not save.");
-    showStatus("settingsStatus", "✓ Saved to Notion! The embed will pick this up on its next refresh.", "success");
+    showStatus("settingsStatus", "✓ Saved! The embed picks this up on its next refresh.", "success");
     currentProfile = profile;
-    renderWidget("settingsPreview", { token, pageUrl, live: false });
+    renderWidget("settingsPreview", { token, pageUrl });
   } catch (e) {
     showStatus("settingsStatus", "Error: " + e.message, "error");
   }
 });
 
 async function loadSettingsTabPreview() {
-  const conv = loadConvenience();
-  const token = document.getElementById("token").value.trim() || conv.token;
+  const conv    = loadConvenience();
+  const token   = document.getElementById("token").value.trim()   || conv.token;
   const pageUrl = document.getElementById("pageurl").value.trim() || conv.pageUrl;
   if (!token || !pageUrl) return;
   try {
     const data = await fetchNotionData(token, pageUrl);
-    currentItems = data.items;
-    currentProfile = data.profile;
+    applyFetchedData(data);
     fillSettingsForm(currentProfile);
-    renderWidget("settingsPreview", { token, pageUrl, live: false });
+    renderWidget("settingsPreview", { token, pageUrl });
   } catch (e) { /* silent */ }
 }
 
 /* ===================== Widget rendering ===================== */
-const DOT_COLORS = ["#c9a87c","#7a4a3a","#1a1a1a","#9b8b7a","#5a4a3a","#b89b7a"];
+const DOT_COLORS  = ["#c9a87c","#7a4a3a","#1a1a1a","#9b8b7a","#5a4a3a","#b89b7a"];
 const CELL_COLORS = ["#f0e0d6","#d6e8f0","#d6f0e0","#f0d6e8","#e8f0d6","#e8d6f0","#f0f0d6","#d6d6f0","#f0d6d6"];
 
 function renderWidget(containerId, opts) {
   const container = document.getElementById(containerId);
-  const profile = currentProfile || { username: "@yourusername", displayName: "Your Display Name", highlights: [] };
-  const items = currentItems || [];
+  if (!container) return;
 
+  const profile  = currentProfile || { username: "@yourusername", displayName: "Your Display Name", highlights: [] };
+  const items    = currentItems   || [];
+
+  /* Tag set for filter dots */
   const tagSet = [];
   items.forEach((item) => {
     if (item.category && tagSet.indexOf(item.category) === -1) tagSet.push(item.category);
@@ -213,7 +280,7 @@ function renderWidget(containerId, opts) {
 
   let html = '<div class="ig-frame">';
 
-  // Profile header
+  /* ── Profile header ── */
   html += '<div class="ig-profile">';
   html += profile.avatar
     ? `<img class="ig-avatar" src="${profile.avatar}" alt="avatar">`
@@ -221,18 +288,20 @@ function renderWidget(containerId, opts) {
   html += '<div>';
   html += `<div class="ig-username">${escapeHtml(profile.username)}</div>`;
   html += `<div class="ig-displayname">${escapeHtml(profile.displayName)}</div>`;
-  if (profile.bio) html += `<div class="ig-bio">${escapeHtml(profile.bio)}</div>`;
-  if (profile.link) html += `<a class="ig-link" href="${profile.link}" target="_blank">${escapeHtml(profile.link)}</a>`;
+  if (profile.bio)  html += `<div class="ig-bio">${escapeHtml(profile.bio)}</div>`;
+  if (profile.link) html += `<a class="ig-link" href="${escapeHtml(profile.link)}" target="_blank">${escapeHtml(profile.link)}</a>`;
   html += "</div></div>";
 
-  // Highlights
+  /* ── Story highlights ──
+     These are rendered as plain HTML — they have NO draggable attribute
+     and are outside #igGridInner, so grid drag events never touch them. */
   if (profile.highlights && profile.highlights.length > 0) {
     html += '<div class="ig-highlights">';
     profile.highlights.forEach((h) => {
       html += '<div class="ig-highlight">';
-      html += `<div class="ig-highlight-ring" style="background:${h.color || "#c0392b"}">`;
+      html += `<div class="ig-highlight-ring" style="background:${escapeHtml(h.color || "#c0392b")}">`;
       html += h.cover
-        ? `<img class="ig-highlight-cover" src="${h.cover}" alt="">`
+        ? `<img class="ig-highlight-cover" src="${escapeHtml(h.cover)}" alt="">`
         : '<div class="ig-highlight-cover"></div>';
       html += "</div>";
       html += `<div class="ig-highlight-label">${escapeHtml(h.name || "")}</div>`;
@@ -241,7 +310,7 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
-  // Tag filter dots
+  /* ── Tag filter dots ── */
   if (tagSet.length > 0) {
     html += '<div class="ig-tags">';
     tagSet.forEach((tag, i) => {
@@ -254,37 +323,41 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
-  // Toolbar
+  /* ── Toolbar ── */
   html += '<div class="ig-toolbar">';
   html += `<button class="ig-tool-icon" data-action="refresh" title="Refresh">⟳</button>`;
   html += '<div class="ig-tabs">';
   html += `<button class="ig-tab-btn ${activePostType === "Post" ? "active" : ""}" data-posttype="Post">Posts</button>`;
-  if (hasReels) html += `<button class="ig-tab-btn ${activePostType === "Reel" ? "active" : ""}" data-posttype="Reel">Reels</button>`;
+  if (hasReels) {
+    html += `<button class="ig-tab-btn ${activePostType === "Reel" ? "active" : ""}" data-posttype="Reel">Reels</button>`;
+  }
   html += "</div></div>";
 
-  // Filter items
+  /* ── Filtered items ── */
   const filtered = items.filter((i) => {
     if (i.postType !== activePostType && !(activePostType === "Post" && !i.postType)) return false;
     if (activeFilterTag && i.category !== activeFilterTag) return false;
     return true;
   });
 
-  // Grid — 4:5 portrait cells
+  /* ── Grid — each cell has draggable + data-id; NO data-idx ── */
   html += '<div class="ig-grid" id="igGridInner">';
   filtered.slice(0, 60).forEach((item, i) => {
-    html += `<div class="ig-cell" draggable="true" data-id="${item.id}" title="${escapeHtml(item.title)}${item.date ? " · " + item.date : ""}">`;
+    /* IMPORTANT: draggable="true" is set here, NOT on highlights or any
+       other element.  wireDragAndDrop only wires cells inside #igGridInner. */
+    html += `<div class="ig-cell" draggable="true" data-id="${escapeHtml(item.id)}" title="${escapeHtml(item.title)}${item.date ? " · " + item.date : ""}">`;
     if (item.image) {
       if (item.isVideo) {
-        html += `<video src="${item.image}" muted></video>`;
+        html += `<video src="${escapeHtml(item.image)}" muted></video>`;
       } else {
-        html += `<img src="${item.image}" alt="${escapeHtml(item.title)}" onerror="this.style.display='none'">`;
+        html += `<img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.title)}" onerror="this.style.display='none'">`;
       }
     } else {
       html += `<div class="ig-clabel" style="background:${CELL_COLORS[i % 9]}">${escapeHtml((item.title || "Untitled").substring(0, 22))}</div>`;
     }
-    if (item.isVideo) html += '<span class="ig-badge">▶</span>';
+    if (item.isVideo)    html += '<span class="ig-badge">▶</span>';
     if (item.isCarousel) html += '<span class="ig-badge">⧉</span>';
-    if (item.date) html += `<span class="ig-dbadge">${item.date.substring(5,10)}</span>`;
+    if (item.date)       html += `<span class="ig-dbadge">${item.date.substring(5, 10)}</span>`;
     html += "</div>";
   });
   html += "</div></div>";
@@ -294,6 +367,7 @@ function renderWidget(containerId, opts) {
 }
 
 function wireWidgetInteractions(container, containerId, opts) {
+  /* Tag filter dots */
   container.querySelectorAll(".ig-tag").forEach((btn) => {
     btn.addEventListener("click", () => {
       activeFilterTag = activeFilterTag === btn.dataset.tag ? null : btn.dataset.tag;
@@ -301,6 +375,7 @@ function wireWidgetInteractions(container, containerId, opts) {
     });
   });
 
+  /* Posts / Reels tabs */
   container.querySelectorAll(".ig-tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       activePostType = btn.dataset.posttype;
@@ -308,38 +383,42 @@ function wireWidgetInteractions(container, containerId, opts) {
     });
   });
 
+  /* Manual refresh button */
   const refreshBtn = container.querySelector('[data-action="refresh"]');
-  if (refreshBtn) {
+  if (refreshBtn && opts && opts.token) {
     refreshBtn.addEventListener("click", async () => {
-      if (!opts || !opts.token || !opts.pageUrl) return;
       try {
         const data = await fetchNotionData(opts.token, opts.pageUrl);
-        currentItems = data.items;
-        currentProfile = data.profile;
+        manualOrder = null;            // accept Notion's order on manual refresh
+        applyFetchedData(data);
         renderWidget(containerId, opts);
-      } catch (e) { /* ignore transient errors */ }
+      } catch (e) { /* ignore */ }
     });
   }
 
+  /* Drag-and-drop — scoped to #igGridInner only */
   wireDragAndDrop(container, containerId, opts);
 }
 
-/* ===================== Drag-and-drop reorder =====================
-   Strategy:
-   - Track the dragged item by its Notion page ID (data-id), not by
-     a positional index that goes stale after re-renders.
-   - Use dragenter (fires once per cell) instead of dragover (fires
-     every few ms) for highlight — smoother, no flicker.
-   - dragleave uses relatedTarget to avoid false fires when the mouse
-     passes over a child element (image/video/badge).
-   - After reorder, sort currentItems by new order before re-rendering
-     so the grid doesn't snap back to the old sequence.
-================================================================== */
+/* ================================================================
+   Drag-and-drop — grid only, highlights are never affected
+   ================================================================
+   Key design decisions:
+   - Drag is wired ONLY on cells inside #igGridInner.
+   - We track the dragged item by its Notion page ID (data-id),
+     not by a positional index that goes stale after re-renders.
+   - dragenter (fires once per target cell) is used to add the
+     drag-over highlight, not dragover (fires every few ms).
+   - dragleave checks relatedTarget so passing over a child element
+     (img/video/badge) doesn't remove the highlight prematurely.
+   - After drop, currentItems is re-sorted by the new order and
+     manualOrder is set so that the next auto-sync doesn't overwrite
+     the user's local sequence until /api/reorder confirms.
+================================================================ */
 function wireDragAndDrop(container, containerId, opts) {
   const grid = container.querySelector("#igGridInner");
   if (!grid) return;
 
-  // The id of the cell currently being dragged
   let dragSrcId = null;
 
   function getCells() {
@@ -352,50 +431,44 @@ function wireDragAndDrop(container, containerId, opts) {
 
   getCells().forEach((cell) => {
 
-    /* ── dragstart ── */
+    /* dragstart — record which cell is moving */
     cell.addEventListener("dragstart", (e) => {
       dragSrcId = cell.dataset.id;
       e.dataTransfer.effectAllowed = "move";
-      // Put the id in the transfer object so drop can read it even if
-      // the element reference changes (e.g. after a mid-drag re-render).
       e.dataTransfer.setData("text/plain", dragSrcId);
-      // Delay adding the class so the drag ghost captures the normal look
       requestAnimationFrame(() => cell.classList.add("dragging"));
     });
 
-    /* ── dragend ── always fires on the source element ── */
+    /* dragend — always fires; clean up all styles */
     cell.addEventListener("dragend", () => {
       clearStyles();
       dragSrcId = null;
     });
 
-    /* ── dragenter ── highlight the potential drop target ── */
+    /* dragenter — highlight drop target (once per cell entry) */
     cell.addEventListener("dragenter", (e) => {
       e.preventDefault();
-      if (cell.dataset.id === dragSrcId) return; // don't highlight source
+      if (cell.dataset.id === dragSrcId) return;
       clearStyles();
-      // Re-add dragging to whichever cell is still the source
       const src = getCells().find((c) => c.dataset.id === dragSrcId);
       if (src) src.classList.add("dragging");
       cell.classList.add("drag-over");
     });
 
-    /* ── dragover ── must preventDefault to allow drop ── */
+    /* dragover — must preventDefault to allow drop event to fire */
     cell.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     });
 
-    /* ── dragleave ── only clear when truly leaving this cell ── */
+    /* dragleave — only remove style when truly leaving this cell */
     cell.addEventListener("dragleave", (e) => {
-      // relatedTarget is where the mouse is going; if it's still inside
-      // this cell (e.g. entering a child img), don't remove the class.
       if (!cell.contains(e.relatedTarget)) {
         cell.classList.remove("drag-over");
       }
     });
 
-    /* ── drop ── do the actual reorder ── */
+    /* drop — reorder currentItems and persist to Notion */
     cell.addEventListener("drop", async (e) => {
       e.preventDefault();
       clearStyles();
@@ -404,20 +477,23 @@ function wireDragAndDrop(container, containerId, opts) {
       const toId   = cell.dataset.id;
       if (!fromId || fromId === toId) return;
 
-      // Build the new id order from the live DOM
-      const ids = getCells().map((c) => c.dataset.id);
+      /* Build new order from the live DOM */
+      const ids     = getCells().map((c) => c.dataset.id);
       const fromIdx = ids.indexOf(fromId);
       const toIdx   = ids.indexOf(toId);
       if (fromIdx === -1 || toIdx === -1) return;
 
-      // Move fromId to toIdx
       ids.splice(fromIdx, 1);
       ids.splice(toIdx, 0, fromId);
 
-      // Assign new order values and sort currentItems to match
+      /* Assign order values */
       const newOrder = {};
       ids.forEach((id, i) => { newOrder[id] = i; });
 
+      /* Store as manualOrder so auto-sync won't overwrite it */
+      manualOrder = new Map(Object.entries(newOrder));
+
+      /* Re-sort currentItems */
       currentItems = currentItems
         .map((it) => newOrder.hasOwnProperty(it.id) ? { ...it, order: newOrder[it.id] } : it)
         .sort((a, b) => {
@@ -431,51 +507,56 @@ function wireDragAndDrop(container, containerId, opts) {
 
       renderWidget(containerId, opts);
 
-      // Persist to Notion (best-effort)
+      /* Persist to Notion — once confirmed, clear manualOrder */
       if (opts && opts.token) {
         try {
           await fetch("/api/reorder", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              token: opts.token,
+              token:   opts.token,
               updates: ids.map((id, i) => ({ id, order: i })),
             }),
           });
-        } catch (_) { /* grid already updated locally */ }
+          /* Notion now matches local order — safe to let auto-sync take over */
+          manualOrder = null;
+        } catch (_) {
+          /* Keep manualOrder so auto-sync continues to respect local order
+             until the next successful reorder call */
+        }
       }
     });
   });
 }
 
-/* ===================== Embed mode ===================== */
+/* ================================================================
+   Embed mode — always live-fetches, auto-refreshes every 30 s
+================================================================ */
 async function initEmbedMode() {
   document.body.classList.add("embed-mode");
 
-  const params = new URLSearchParams(window.location.search);
+  const params  = new URLSearchParams(window.location.search);
   const payload = params.get("c");
   if (!payload) {
     document.getElementById("embedPreview").innerHTML =
-      '<div class="preview-empty">Embed link is missing its connection info. Re-copy the embed link from the Setup tab.</div>';
+      '<div class="preview-empty">Embed link is missing its connection info. Re-copy the link from the Setup tab.</div>';
     return;
   }
 
   let creds;
-  try {
-    creds = JSON.parse(atob(payload));
-  } catch (e) {
+  try { creds = JSON.parse(atob(payload)); }
+  catch (e) {
     document.getElementById("embedPreview").innerHTML =
       '<div class="preview-empty">Invalid embed link.</div>';
     return;
   }
 
-  const opts = { token: creds.token, pageUrl: creds.pageUrl, live: true };
+  const opts = { token: creds.token, pageUrl: creds.pageUrl };
 
   async function loadLive() {
     try {
       const data = await fetchNotionData(creds.token, creds.pageUrl);
-      currentItems = data.items;
-      currentProfile = data.profile;
+      applyFetchedData(data);
       renderWidget("embedPreview", opts);
     } catch (e) {
       document.getElementById("embedPreview").innerHTML =
@@ -484,13 +565,14 @@ async function initEmbedMode() {
   }
 
   await loadLive();
+  /* Refresh every 30 s so edits in Notion show up automatically */
   setInterval(loadLive, 30000);
 }
 
 /* ===================== Init ===================== */
 (function init() {
   const conv = loadConvenience();
-  if (conv.token) document.getElementById("token").value = conv.token;
+  if (conv.token)   document.getElementById("token").value   = conv.token;
   if (conv.pageUrl) document.getElementById("pageurl").value = conv.pageUrl;
   if (conv.token && conv.pageUrl) {
     document.getElementById("embedCard").style.display = "block";
