@@ -39,7 +39,7 @@ input:focus { border-color: #c0392b; background: #fff; }
 .highlight-row input.h-color { flex: 0 0 44px; padding: 2px; height: 32px; cursor: pointer; }
 .highlight-row .h-remove { flex: 0 0 26px; height: 32px; border: none; background: #fbe7e4; color: #c0392b; border-radius: 6px; cursor: pointer; font-size: 13px; }
 
-/* ---------- Compact Instagram-style widget frame ---------- */
+/* ---------- Instagram-style widget frame ---------- */
 .ig-frame { border: 1px solid #dbdbdb; border-radius: 6px; overflow: hidden; background: #fff; max-width: 420px; margin: 0 auto; font-size: 12px; }
 #embedOnlyArea .ig-frame { max-width: 100%; }
 
@@ -57,7 +57,7 @@ input:focus { border-color: #c0392b; background: #fff; }
 .ig-highlight-cover { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: #eee; }
 .ig-highlight-label { font-size: 7.5px; color: #555; max-width: 42px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Tag dots row (content pillar filters) */
+/* Tag dots row */
 .ig-tags { display: flex; gap: 14px; padding: 7px 11px; overflow-x: auto; border-bottom: 1px solid #efefef; }
 .ig-tag { display: flex; flex-direction: column; align-items: center; gap: 3px; flex-shrink: 0; cursor: pointer; background: none; border: none; }
 .ig-tag-dot { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; }
@@ -71,16 +71,65 @@ input:focus { border-color: #c0392b; background: #fff; }
 .ig-tab-btn { background: none; border: none; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; color: #999; padding: 4px 8px; border-radius: 5px; cursor: pointer; text-transform: uppercase; }
 .ig-tab-btn.active { color: #1a1a1a; background: #f5f0eb; }
 
-/* Grid */
-.ig-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5px; background: #efefef; }
-.ig-cell { position: relative; aspect-ratio: 1/1; background: #ede4d8; overflow: hidden; cursor: grab; }
-.ig-cell.dragging { opacity: 0.35; }
-.ig-cell.drag-over { outline: 2px dashed #c0392b; outline-offset: -2px; }
-.ig-cell img, .ig-cell video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
-.ig-cell .ig-clabel { font-size: 7.5px; color: #777; text-align: center; padding: 5px; line-height: 1.2; display: flex; align-items: center; justify-content: center; height: 100%; pointer-events: none; }
-.ig-cell .ig-badge { position: absolute; top: 3px; right: 3px; color: #fff; font-size: 10px; text-shadow: 0 0 3px rgba(0,0,0,0.7); pointer-events: none; }
-.ig-cell .ig-dbadge { position: absolute; bottom: 3px; right: 3px; background: rgba(0,0,0,0.55); color: #fff; font-size: 6.5px; padding: 1px 4px; border-radius: 3px; pointer-events: none; }
-.ig-grid { transition: opacity 0.15s ease; }
+/* ---------- Grid — 4:5 portrait ratio (Instagram style) ---------- */
+.ig-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5px;
+  background: #efefef;
+  transition: opacity 0.15s ease;
+}
+
+.ig-cell {
+  position: relative;
+  aspect-ratio: 4 / 5;       /* portrait, not square */
+  background: #ede4d8;
+  overflow: hidden;
+  cursor: grab;
+  transition: opacity 0.18s ease;
+  user-select: none;
+}
+
+/* Dragging source — fade it out so the target slot is obvious */
+.ig-cell.dragging {
+  opacity: 0.25;
+  cursor: grabbing;
+}
+
+/* Target slot — red border inset */
+.ig-cell.drag-over {
+  outline: 2.5px solid #c0392b;
+  outline-offset: -2.5px;
+}
+
+.ig-cell img,
+.ig-cell video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;  /* so drag events hit the cell, not the image */
+}
+
+.ig-cell .ig-clabel {
+  font-size: 7.5px; color: #777; text-align: center; padding: 5px;
+  line-height: 1.2; display: flex; align-items: center;
+  justify-content: center; height: 100%; pointer-events: none;
+}
+
+.ig-cell .ig-badge {
+  position: absolute; top: 3px; right: 3px;
+  color: #fff; font-size: 10px;
+  text-shadow: 0 0 3px rgba(0,0,0,0.7);
+  pointer-events: none;
+}
+
+.ig-cell .ig-dbadge {
+  position: absolute; bottom: 3px; right: 3px;
+  background: rgba(0,0,0,0.55); color: #fff;
+  font-size: 6.5px; padding: 1px 4px; border-radius: 3px;
+  pointer-events: none;
+}
 
 /* Embed-only mode */
 #embedOnlyArea { display: none; padding: 0; max-width: 480px; margin: 0 auto; }
