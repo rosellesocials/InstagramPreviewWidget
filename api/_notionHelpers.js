@@ -287,9 +287,4 @@ module.exports = async function handler(req, res) {
     res.status(500).json({ success: false, error: err.message || "Unexpected server error." });
   }
 };
-EOF
-Output
 
-
-
-You are out of free messages until 
