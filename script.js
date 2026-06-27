@@ -2,11 +2,9 @@
 let currentItems = [];
 let currentProfile = null;
 let activeFilterTag = null;
-let activePostType = "Post"; // "Post" or "Reel" tab inside the grid
+let activePostType = "Post";
 
-const CONVENIENCE_KEY = "igGridWidgetConvenience"; // ONLY token+pageUrl, for the
-// person's own browser convenience while filling the form again. The embed
-// itself never reads this — it always gets credentials from its own URL.
+const CONVENIENCE_KEY = "igGridWidgetConvenience";
 
 function saveConvenience(token, pageUrl) {
   try { localStorage.setItem(CONVENIENCE_KEY, JSON.stringify({ token, pageUrl })); } catch (e) {}
@@ -19,7 +17,7 @@ function escapeHtml(str) {
   return (str || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
-/* ===================== Tabs (Setup / Settings) ===================== */
+/* ===================== Tabs ===================== */
 document.querySelectorAll(".nav.tab").forEach((navEl) => {
   navEl.addEventListener("click", () => {
     document.querySelectorAll(".nav.tab").forEach((n) => n.classList.remove("active"));
@@ -31,7 +29,7 @@ document.querySelectorAll(".nav.tab").forEach((navEl) => {
   });
 });
 
-/* ===================== Setup: connect & preview ===================== */
+/* ===================== Setup ===================== */
 function showStatus(elId, msg, type) {
   const el = document.getElementById(elId);
   el.className = "status " + type;
@@ -101,7 +99,7 @@ document.getElementById("copyEmbedBtn").addEventListener("click", (e) => {
   setTimeout(() => { e.target.textContent = original; }, 1500);
 });
 
-/* ===================== Settings tab: profile + highlights ===================== */
+/* ===================== Settings tab ===================== */
 function fillSettingsForm(profile) {
   document.getElementById("igusername").value = profile.username || "";
   document.getElementById("igdisplayname").value = profile.displayName || "";
@@ -193,12 +191,10 @@ async function loadSettingsTabPreview() {
     currentProfile = data.profile;
     fillSettingsForm(currentProfile);
     renderWidget("settingsPreview", { token, pageUrl, live: false });
-  } catch (e) {
-    /* silent — Setup tab already surfaces connection errors */
-  }
+  } catch (e) { /* silent */ }
 }
 
-/* ===================== Widget rendering (shared by preview + embed) ===================== */
+/* ===================== Widget rendering ===================== */
 const DOT_COLORS = ["#c9a87c","#7a4a3a","#1a1a1a","#9b8b7a","#5a4a3a","#b89b7a"];
 const CELL_COLORS = ["#f0e0d6","#d6e8f0","#d6f0e0","#f0d6e8","#e8f0d6","#e8d6f0","#f0f0d6","#d6d6f0","#f0d6d6"];
 
@@ -217,6 +213,7 @@ function renderWidget(containerId, opts) {
 
   let html = '<div class="ig-frame">';
 
+  // Profile header
   html += '<div class="ig-profile">';
   html += profile.avatar
     ? `<img class="ig-avatar" src="${profile.avatar}" alt="avatar">`
@@ -228,6 +225,7 @@ function renderWidget(containerId, opts) {
   if (profile.link) html += `<a class="ig-link" href="${profile.link}" target="_blank">${escapeHtml(profile.link)}</a>`;
   html += "</div></div>";
 
+  // Highlights
   if (profile.highlights && profile.highlights.length > 0) {
     html += '<div class="ig-highlights">';
     profile.highlights.forEach((h) => {
@@ -243,6 +241,7 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
+  // Tag filter dots
   if (tagSet.length > 0) {
     html += '<div class="ig-tags">';
     tagSet.forEach((tag, i) => {
@@ -255,23 +254,25 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
+  // Toolbar
   html += '<div class="ig-toolbar">';
   html += `<button class="ig-tool-icon" data-action="refresh" title="Refresh">⟳</button>`;
   html += '<div class="ig-tabs">';
   html += `<button class="ig-tab-btn ${activePostType === "Post" ? "active" : ""}" data-posttype="Post">Posts</button>`;
   if (hasReels) html += `<button class="ig-tab-btn ${activePostType === "Reel" ? "active" : ""}" data-posttype="Reel">Reels</button>`;
-  html += "</div>";
-  html += "</div>";
+  html += "</div></div>";
 
+  // Filter items
   const filtered = items.filter((i) => {
     if (i.postType !== activePostType && !(activePostType === "Post" && !i.postType)) return false;
     if (activeFilterTag && i.category !== activeFilterTag) return false;
     return true;
   });
 
+  // Grid — 4:5 portrait cells
   html += '<div class="ig-grid" id="igGridInner">';
   filtered.slice(0, 60).forEach((item, i) => {
-    html += `<div class="ig-cell" draggable="true" data-id="${item.id}" data-idx="${i}" title="${escapeHtml(item.title)}${item.date ? " · " + item.date : ""}">`;
+    html += `<div class="ig-cell" draggable="true" data-id="${item.id}" title="${escapeHtml(item.title)}${item.date ? " · " + item.date : ""}">`;
     if (item.image) {
       if (item.isVideo) {
         html += `<video src="${item.image}" muted></video>`;
@@ -316,65 +317,121 @@ function wireWidgetInteractions(container, containerId, opts) {
         currentItems = data.items;
         currentProfile = data.profile;
         renderWidget(containerId, opts);
-      } catch (e) { /* ignore transient refresh errors */ }
+      } catch (e) { /* ignore transient errors */ }
     });
   }
 
   wireDragAndDrop(container, containerId, opts);
 }
 
-/* ===================== Drag-and-drop reorder ===================== */
+/* ===================== Drag-and-drop reorder =====================
+   Strategy:
+   - Track the dragged item by its Notion page ID (data-id), not by
+     a positional index that goes stale after re-renders.
+   - Use dragenter (fires once per cell) instead of dragover (fires
+     every few ms) for highlight — smoother, no flicker.
+   - dragleave uses relatedTarget to avoid false fires when the mouse
+     passes over a child element (image/video/badge).
+   - After reorder, sort currentItems by new order before re-rendering
+     so the grid doesn't snap back to the old sequence.
+================================================================== */
 function wireDragAndDrop(container, containerId, opts) {
   const grid = container.querySelector("#igGridInner");
   if (!grid) return;
-  let dragEl = null;
 
-  grid.querySelectorAll(".ig-cell").forEach((cell) => {
-    cell.addEventListener("dragstart", () => {
-      dragEl = cell;
-      cell.classList.add("dragging");
+  // The id of the cell currently being dragged
+  let dragSrcId = null;
+
+  function getCells() {
+    return Array.from(grid.querySelectorAll(".ig-cell"));
+  }
+
+  function clearStyles() {
+    getCells().forEach((c) => c.classList.remove("dragging", "drag-over"));
+  }
+
+  getCells().forEach((cell) => {
+
+    /* ── dragstart ── */
+    cell.addEventListener("dragstart", (e) => {
+      dragSrcId = cell.dataset.id;
+      e.dataTransfer.effectAllowed = "move";
+      // Put the id in the transfer object so drop can read it even if
+      // the element reference changes (e.g. after a mid-drag re-render).
+      e.dataTransfer.setData("text/plain", dragSrcId);
+      // Delay adding the class so the drag ghost captures the normal look
+      requestAnimationFrame(() => cell.classList.add("dragging"));
     });
+
+    /* ── dragend ── always fires on the source element ── */
     cell.addEventListener("dragend", () => {
-      cell.classList.remove("dragging");
-      grid.querySelectorAll(".ig-cell").forEach((c) => c.classList.remove("drag-over"));
+      clearStyles();
+      dragSrcId = null;
     });
+
+    /* ── dragenter ── highlight the potential drop target ── */
+    cell.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      if (cell.dataset.id === dragSrcId) return; // don't highlight source
+      clearStyles();
+      // Re-add dragging to whichever cell is still the source
+      const src = getCells().find((c) => c.dataset.id === dragSrcId);
+      if (src) src.classList.add("dragging");
+      cell.classList.add("drag-over");
+    });
+
+    /* ── dragover ── must preventDefault to allow drop ── */
     cell.addEventListener("dragover", (e) => {
       e.preventDefault();
-      if (cell !== dragEl) cell.classList.add("drag-over");
+      e.dataTransfer.dropEffect = "move";
     });
-    cell.addEventListener("dragleave", () => cell.classList.remove("drag-over"));
+
+    /* ── dragleave ── only clear when truly leaving this cell ── */
+    cell.addEventListener("dragleave", (e) => {
+      // relatedTarget is where the mouse is going; if it's still inside
+      // this cell (e.g. entering a child img), don't remove the class.
+      if (!cell.contains(e.relatedTarget)) {
+        cell.classList.remove("drag-over");
+      }
+    });
+
+    /* ── drop ── do the actual reorder ── */
     cell.addEventListener("drop", async (e) => {
       e.preventDefault();
-      cell.classList.remove("drag-over");
-      if (!dragEl || dragEl === cell) return;
+      clearStyles();
 
-      const cells = Array.from(grid.querySelectorAll(".ig-cell"));
-      const fromIdx = cells.indexOf(dragEl);
-      const toIdx = cells.indexOf(cell);
+      const fromId = e.dataTransfer.getData("text/plain");
+      const toId   = cell.dataset.id;
+      if (!fromId || fromId === toId) return;
 
-      const orderedIds = cells.map((c) => c.dataset.id);
-      const [movedId] = orderedIds.splice(fromIdx, 1);
-      orderedIds.splice(toIdx, 0, movedId);
+      // Build the new id order from the live DOM
+      const ids = getCells().map((c) => c.dataset.id);
+      const fromIdx = ids.indexOf(fromId);
+      const toIdx   = ids.indexOf(toId);
+      if (fromIdx === -1 || toIdx === -1) return;
 
-      // Re-map currentItems' order field based on new sequence, then ACTUALLY
-      // re-sort the array by that new order before re-rendering — otherwise
-      // the grid snaps back to its old sequence even though order values changed.
-      const idToNewOrder = {};
-      orderedIds.forEach((id, i) => { idToNewOrder[id] = i; });
-      currentItems = currentItems.map((it) =>
-        idToNewOrder.hasOwnProperty(it.id) ? { ...it, order: idToNewOrder[it.id] } : it
-      );
-      currentItems.sort((a, b) => {
-        const aHas = idToNewOrder.hasOwnProperty(a.id);
-        const bHas = idToNewOrder.hasOwnProperty(b.id);
-        if (aHas && bHas) return idToNewOrder[a.id] - idToNewOrder[b.id];
-        if (aHas) return -1;
-        if (bHas) return 1;
-        return 0;
-      });
+      // Move fromId to toIdx
+      ids.splice(fromIdx, 1);
+      ids.splice(toIdx, 0, fromId);
+
+      // Assign new order values and sort currentItems to match
+      const newOrder = {};
+      ids.forEach((id, i) => { newOrder[id] = i; });
+
+      currentItems = currentItems
+        .map((it) => newOrder.hasOwnProperty(it.id) ? { ...it, order: newOrder[it.id] } : it)
+        .sort((a, b) => {
+          const aIn = newOrder.hasOwnProperty(a.id);
+          const bIn = newOrder.hasOwnProperty(b.id);
+          if (aIn && bIn) return newOrder[a.id] - newOrder[b.id];
+          if (aIn) return -1;
+          if (bIn) return  1;
+          return 0;
+        });
 
       renderWidget(containerId, opts);
 
+      // Persist to Notion (best-effort)
       if (opts && opts.token) {
         try {
           await fetch("/api/reorder", {
@@ -382,16 +439,16 @@ function wireDragAndDrop(container, containerId, opts) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               token: opts.token,
-              updates: orderedIds.map((id, i) => ({ id, order: i })),
+              updates: ids.map((id, i) => ({ id, order: i })),
             }),
           });
-        } catch (err) { /* best-effort; grid already reflects new order locally */ }
+        } catch (_) { /* grid already updated locally */ }
       }
     });
   });
 }
 
-/* ===================== Embed mode: always live, never localStorage ===================== */
+/* ===================== Embed mode ===================== */
 async function initEmbedMode() {
   document.body.classList.add("embed-mode");
 
@@ -399,7 +456,7 @@ async function initEmbedMode() {
   const payload = params.get("c");
   if (!payload) {
     document.getElementById("embedPreview").innerHTML =
-      '<div class="preview-empty">This embed link is missing its connection info. Re-copy the embed link from the Setup tab.</div>';
+      '<div class="preview-empty">Embed link is missing its connection info. Re-copy the embed link from the Setup tab.</div>';
     return;
   }
 
