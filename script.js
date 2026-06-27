@@ -84,7 +84,6 @@ document.getElementById("genbtn").addEventListener("click", async () => {
     document.getElementById("embedCard").style.display = "block";
     document.getElementById("embedUrl").value = buildEmbedUrl(token, pageUrl);
 
-    // Pre-fill the settings tab with whatever profile is currently live in Notion.
     fillSettingsForm(currentProfile);
   } catch (e) {
     showStatus("status", "Error: " + e.message, "error");
@@ -218,7 +217,6 @@ function renderWidget(containerId, opts) {
 
   let html = '<div class="ig-frame">';
 
-  // Profile
   html += '<div class="ig-profile">';
   html += profile.avatar
     ? `<img class="ig-avatar" src="${profile.avatar}" alt="avatar">`
@@ -230,7 +228,6 @@ function renderWidget(containerId, opts) {
   if (profile.link) html += `<a class="ig-link" href="${profile.link}" target="_blank">${escapeHtml(profile.link)}</a>`;
   html += "</div></div>";
 
-  // Highlights
   if (profile.highlights && profile.highlights.length > 0) {
     html += '<div class="ig-highlights">';
     profile.highlights.forEach((h) => {
@@ -246,7 +243,6 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
-  // Tag filter dots
   if (tagSet.length > 0) {
     html += '<div class="ig-tags">';
     tagSet.forEach((tag, i) => {
@@ -259,7 +255,6 @@ function renderWidget(containerId, opts) {
     html += "</div>";
   }
 
-  // Toolbar with Posts/Reels tabs
   html += '<div class="ig-toolbar">';
   html += `<button class="ig-tool-icon" data-action="refresh" title="Refresh">⟳</button>`;
   html += '<div class="ig-tabs">';
@@ -268,7 +263,6 @@ function renderWidget(containerId, opts) {
   html += "</div>";
   html += "</div>";
 
-  // Grid
   const filtered = items.filter((i) => {
     if (i.postType !== activePostType && !(activePostType === "Post" && !i.postType)) return false;
     if (activeFilterTag && i.category !== activeFilterTag) return false;
@@ -358,17 +352,26 @@ function wireDragAndDrop(container, containerId, opts) {
       const fromIdx = cells.indexOf(dragEl);
       const toIdx = cells.indexOf(cell);
 
-      // Reorder the in-memory items list (within the currently filtered set's ids).
       const orderedIds = cells.map((c) => c.dataset.id);
       const [movedId] = orderedIds.splice(fromIdx, 1);
       orderedIds.splice(toIdx, 0, movedId);
 
-      // Re-map currentItems' order field based on new sequence, smoothly re-render.
+      // Re-map currentItems' order field based on new sequence, then ACTUALLY
+      // re-sort the array by that new order before re-rendering — otherwise
+      // the grid snaps back to its old sequence even though order values changed.
       const idToNewOrder = {};
       orderedIds.forEach((id, i) => { idToNewOrder[id] = i; });
       currentItems = currentItems.map((it) =>
         idToNewOrder.hasOwnProperty(it.id) ? { ...it, order: idToNewOrder[it.id] } : it
       );
+      currentItems.sort((a, b) => {
+        const aHas = idToNewOrder.hasOwnProperty(a.id);
+        const bHas = idToNewOrder.hasOwnProperty(b.id);
+        if (aHas && bHas) return idToNewOrder[a.id] - idToNewOrder[b.id];
+        if (aHas) return -1;
+        if (bHas) return 1;
+        return 0;
+      });
 
       renderWidget(containerId, opts);
 
@@ -424,8 +427,6 @@ async function initEmbedMode() {
   }
 
   await loadLive();
-  // Always-fresh: re-fetch from Notion automatically so edits in the database,
-  // Calendar View, or Profile & Highlights tab show up without manual action.
   setInterval(loadLive, 30000);
 }
 
