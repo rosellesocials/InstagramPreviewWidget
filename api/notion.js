@@ -1,12 +1,11 @@
+cat > /mnt/user-data/outputs/igfeedpreviewwidget/api/notion.js << 'EOF'
 // /api/notion.js
-// Returns { success, items, profile, dataSourceId } — always a fresh live
-// read from Notion. No caching, no localStorage involved on the server side.
+// Stable Notion API (2022-06-28) — no data_sources, no experimental endpoints.
 
 const {
   extractDatabaseId,
   formatDashedId,
-  resolveDataSourceId,
-  queryDataSource,
+  queryAllPages,
   mapPostRow,
   parseSettingsRow,
   defaultProfile,
@@ -32,23 +31,17 @@ module.exports = async function handler(req, res) {
       res.status(400).json({ success: false, error: "Could not find a valid database ID in that URL." });
       return;
     }
+
     const databaseId = formatDashedId(rawId);
 
-    const resolved = await resolveDataSourceId(databaseId, token);
-    if (!resolved.dataSourceId) {
-      res.status(400).json({
-        success: false,
-        error: "Could not resolve data source: " + (resolved.error || "unknown reason"),
-      });
-      return;
-    }
-
-    const queried = await queryDataSource(resolved.dataSourceId, token);
+    // Query ALL rows (handles pagination automatically)
+    const queried = await queryAllPages(databaseId, token);
     if (queried.error) {
       res.status(400).json({ success: false, error: queried.error });
       return;
     }
 
+    // Separate settings row from post rows
     let profile = defaultProfile();
     const postRows = [];
 
@@ -64,9 +57,7 @@ module.exports = async function handler(req, res) {
 
     let items = postRows.map(mapPostRow);
 
-    // Sort: if any item has an explicit Order value, sort by that (drag-and-drop
-    // reordering takes over). Otherwise fall back to Schedule Date ascending,
-    // so dragging a card in Notion's Calendar View automatically reorders the grid.
+    // Sort by Order number if any row has it, otherwise by date ascending
     const hasOrder = items.some((i) => i.order !== null && i.order !== undefined);
     if (hasOrder) {
       items.sort((a, b) => (a.order ?? 999999) - (b.order ?? 999999));
@@ -78,12 +69,8 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    res.status(200).json({
-      success: true,
-      items,
-      profile,
-      dataSourceId: resolved.dataSourceId,
-    });
+    res.status(200).json({ success: true, items, profile });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: err.message || "Unexpected server error." });
