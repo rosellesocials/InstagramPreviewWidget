@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Instagram Grid Widget</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<nav class="sidebar" id="sidebar">
+  <div class="logo">instagram<br>grid<br><em>preview</em></div>
+  <div class="nav tab active" data-tab="setup">Setup</div>
+  <div class="nav tab" data-tab="settings">Profile &amp; Highlights</div>
+  <div class="nav">Help</div>
+</nav>
+
+<main class="main" id="mainArea">
+
+  <!-- ============ SETUP TAB ============ -->
+  <section id="setupSection" class="tab-panel active">
+    <h1>Widget Setup</h1>
+    <div class="two">
+      <div>
+        <div class="card">
+          <div class="card-title">🔑 Notion Integration Token</div>
+          <input type="text" id="token" placeholder="ntn_..." autocomplete="off" />
+          <div class="hint">Copy the token from your integration's page</div>
+        </div>
+        <div class="card">
+          <div class="card-title">🗂 Connect integration with database</div>
+          <div class="steps">
+            <span>1 &nbsp;Open your database in Notion. Click ··· in top-right</span><br>
+            <span>2 &nbsp;Select "Connect to" → Choose your integration</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">🔗 Notion Page or Database URL</div>
+          <input type="url" id="pageurl" placeholder="https://www.notion.so/..." autocomplete="off" />
+          <div class="hint">Paste the URL of your Notion page or database</div>
+        </div>
+        <button class="btn" id="genbtn">Connect &amp; Preview →</button>
+        <div class="status" id="status"></div>
+
+        <div class="card" id="embedCard" style="display:none;">
+          <div class="card-title">📋 Embed this in Notion</div>
+          <div class="hint" style="margin-bottom:8px;">
+            This link always live-fetches your Notion database — no caching, no
+            localStorage. Editing your database, Calendar View, or Profile &amp;
+            Highlights tab will show up automatically the next time the embed
+            refreshes (every 30s, or on manual refresh).
+          </div>
+          <input type="text" id="embedUrl" readonly onclick="this.select()" />
+          <button class="btn btn-secondary" id="copyEmbedBtn">Copy embed link</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="card-title">🖼 Widget Preview</div>
+          <div id="preview">
+            <div class="preview-empty">
+              <p>Your widget preview will appear here<br>Fill out the form to get started</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS TAB ============ -->
+  <section id="settingsSection" class="tab-panel">
+    <h1>Profile &amp; Highlights</h1>
+    <p class="hint" style="margin-bottom:1rem;">
+      These are saved directly into your Notion database (as a hidden row),
+      so they're always the same everywhere — including inside the Notion embed.
+    </p>
+    <div class="two">
+      <div>
+        <div class="card">
+          <div class="card-title">👤 Profile</div>
+          <input type="text" id="igusername" placeholder="@yourusername" style="margin-bottom:8px;" />
+          <input type="text" id="igdisplayname" placeholder="Your Display Name" style="margin-bottom:8px;" />
+          <input type="text" id="igbio" placeholder="Short bio" style="margin-bottom:8px;" />
+          <input type="url" id="iglink" placeholder="https://yourlink.com" style="margin-bottom:8px;" />
+          <input type="url" id="igavatar" placeholder="Avatar image URL" />
+        </div>
+
+        <div class="card">
+          <div class="card-title">✨ Story Highlights</div>
+          <div id="highlightsList"></div>
+          <button class="btn btn-secondary" id="addHighlightBtn" type="button">+ Add Highlight</button>
+        </div>
+
+        <button class="btn" id="saveSettingsBtn">Save to Notion →</button>
+        <div class="status" id="settingsStatus"></div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">🖼 Live Preview</div>
+          <div id="settingsPreview">
+            <div class="preview-empty"><p>Connect your database in the Setup tab first.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ EMBED-ONLY VIEW ============ -->
+  <div id="embedOnlyArea">
+    <div id="embedPreview"></div>
+  </div>
+</main>
+
+<script src="/script.js"></script>
+</body>
+</html>
